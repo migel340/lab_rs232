@@ -1,6 +1,7 @@
 import serial.tools.list_ports
 import serial
 from typing import List
+import threading
 
 def filter_ports() -> List[serial.tools.list_ports.ListPortInfo]:
     ports = serial.tools.list_ports.comports()
@@ -74,7 +75,7 @@ def read_serial_settings() -> tuple[int, any, any, any, dict[str, bool], bool]:
     return speed, character_size, parity, stop_bits, flow_kwargs, manual_mode
 
 
-def serial_builder(port: serial.tools.list_ports.ListPortInfo) -> serial.Serial:
+def serial_builder(port: serial.tools.list_ports.ListPortInfo) -> tuple[serial.Serial, bool]:
     speed, character_size, parity, stop_bits, flow_kwargs, manual_mode = read_serial_settings()
     device = serial.Serial(
         port.device,
@@ -107,6 +108,49 @@ def manual_control_loop(ser):
             case "q":
                 break    
     
+def select_terminator() -> bytes:
+    match input("\nenter the terminator (0 - none, 1 - CR, 2 - LF, 3 - CRLF, 4 - custom one character), LF is default: ").strip().upper():
+        case "0":
+            return b""
+        case "1":
+            return b"\r"
+        case "2":
+            return b"\n"
+        case "3":
+            return b"\r\n"
+        case "4": 
+            custom = input("enter the custom terminator (e.g. $ or **): ")
+            custom_processed = custom.encode('ascii').decode('unicode_escape')
+            if len(custom_processed) == 0:
+                print("invalid custom terminator, defaulting to LF")
+                return b"\n"
+            elif len(custom_processed) > 2:
+                print("custom terminator max length is 2, string will be truncated to 2 characters")
+                return custom_processed[:2].encode('ascii')
+            return custom_processed.encode('ascii')
+        
+        case _:
+            print("invalid terminator, defaulting to none")
+            return b"\n"
+
+def write_loop(device: serial.Serial, text: str, terminator: bytes):
+    try:
+        data_byes = text.encode('ascii') + terminator
+        device.write(data_byes)
+    except serial.SerialException as e:
+        print(f"error writing to serial port: {e}")
+
+def read_thread(device: serial.Serial):
+    while True:
+        try:
+            if device.in_waiting > 0 and device.is_open:
+                data_bytes = device.read(device.in_waiting)
+                data_decoded = data_bytes.decode('ascii', errors='ignore')
+                print(f"r: {data_decoded}")
+        except serial.SerialException:
+            print("serial exception, stopping read thread")
+            break
+
 def main():
     filtered_ports = filter_ports()
     if not filtered_ports:
@@ -115,11 +159,22 @@ def main():
     selected_port = select_port(filtered_ports)
     print(f"selected port: {selected_port.device}")
     
-    device, manual_mode = serial_builder(selected_port)
+    device, manual_mode = serial_builder(selected_port) # port is already opened by serial.Serial() constructor, so we can use it immediately
     print(device)
     if manual_mode:
         manual_control_loop(device)
-
+    terminator = select_terminator()
+    print(f"selected terminator: {terminator}")
+    #device.open() # serial.Serial() already opens the port, so this is not needed
+    threading.Thread(target=read_thread, args=(device,), daemon=True).start()
+    print("you can start typing messages to send, type 'exit' to quit")
+    while True:
+        text = input()
+        if text.lower() == "exit":
+            break
+        write_loop(device, text, terminator)
+    device.close()
 
 if __name__ == "__main__":
     main()
+
