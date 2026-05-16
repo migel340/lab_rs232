@@ -2,6 +2,17 @@ import serial.tools.list_ports
 import serial
 from typing import List
 import threading
+import time
+
+ping_sent_time = None
+ping_timer_obj = None
+
+
+def on_ping_timeout():
+    global ping_timer_obj, ping_sent_time
+    print("ping timeout: no pong received")
+    ping_timer_obj = None
+    ping_sent_time = None
 
 def filter_ports() -> List[serial.tools.list_ports.ListPortInfo]:
     ports = serial.tools.list_ports.comports()
@@ -135,15 +146,50 @@ def select_terminator() -> bytes:
 
 def write_loop(device: serial.Serial, text: str, terminator: bytes):
     try:
-        data_byes = text.encode('ascii') + terminator
-        device.write(data_byes)
+        global ping_timer_obj, ping_sent_time
+        if text == "ping":
+            ping_sent_time = time.perf_counter()
+            if ping_timer_obj is not None:
+                try:
+                    ping_timer_obj.cancel()
+                except Exception:
+                    pass
+            timeout_seconds = device.timeout if getattr(device, "timeout", None) is not None and device.timeout > 0 else 2.0
+            ping_timer_obj = threading.Timer(timeout_seconds, on_ping_timeout)
+            ping_timer_obj.start()
+
+        data_bytes = text.encode('ascii') + terminator
+        device.write(data_bytes)
     except serial.SerialException as e:
         print(f"error writing to serial port: {e}")
 
-def read_thread(device: serial.Serial):
+def read_thread(device: serial.Serial, terminator: bytes = b"\n"):
+    bufor = bytearray()
     while True:
         try:
             if device.in_waiting > 0 and device.is_open:
+                bufor.extend(device.read(device.in_waiting))
+                if terminator in bufor:
+                    command, post_command = bufor.split(terminator, 1)
+                    bufor = bytearray(post_command)
+                    command = command.decode('ascii', errors='ignore').strip()
+                    if command == "ping":
+                        device.write(b"pong" + terminator)
+                    elif command == "pong":
+                        global ping_timer_obj, ping_sent_time
+                        if ping_timer_obj is not None:
+                            try:
+                                ping_timer_obj.cancel()
+                            except Exception:
+                                pass
+                            ping_timer_obj = None
+                            if ping_sent_time is not None:
+                                time_diff = time.perf_counter() - ping_sent_time
+                                print(f"ping time: {time_diff:.3f} seconds")
+                                ping_sent_time = None
+                        else:
+                            print("received pong but no ping pending")
+                    print(f"r: {command}")
                 data_bytes = device.read(device.in_waiting)
                 data_decoded = data_bytes.decode('ascii', errors='ignore')
                 print(f"r: {data_decoded}")
@@ -166,7 +212,7 @@ def main():
     terminator = select_terminator()
     print(f"selected terminator: {terminator}")
     #device.open() # serial.Serial() already opens the port, so this is not needed
-    threading.Thread(target=read_thread, args=(device,), daemon=True).start()
+    threading.Thread(target=read_thread, args=(device, terminator), daemon=True).start()
     print("you can start typing messages to send, type 'exit' to quit")
     while True:
         text = input()
