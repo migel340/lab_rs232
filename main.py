@@ -119,14 +119,14 @@ def select_terminator() -> bytes:
         case "3":
             return b"\r\n"
         case "4": 
-            custom = input("enter the custom terminator (e.g. $ or **): ")
+            custom = input("enter the custom terminator (e.g. $): ")
             custom_processed = custom.encode('ascii').decode('unicode_escape')
             if len(custom_processed) == 0:
                 print("invalid custom terminator, defaulting to LF")
                 return b"\n"
-            elif len(custom_processed) > 2:
-                print("custom terminator max length is 2, string will be truncated to 2 characters")
-                return custom_processed[:2].encode('ascii')
+            elif len(custom_processed) > 1:
+                print("custom terminator max length is 1, string will be truncated to 1 character")
+                return custom_processed[:1].encode('ascii')
             return custom_processed.encode('ascii')
         
         case _:
